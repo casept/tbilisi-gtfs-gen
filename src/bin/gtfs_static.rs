@@ -242,8 +242,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let mut seconds = h * 3600 + m * 60;
 
                                 // Handle times past midnight (24:xx, 25:xx etc)
-                                if let Some(prev) = last_time {
-                                    if seconds < prev {
+                                if let Some(prev) = last_time
+                                    && seconds < prev {
                                         // If time jumps back more than 12 hours, assume it's actually next day
                                         // But if it's just a small jump back (like 1-2 minutes), it's probably data error
                                         if prev - seconds > 12 * 3600 {
@@ -255,7 +255,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             break;
                                         }
                                     }
-                                }
 
                                 stop_times.push(RawStopTime {
                                     trip_id: trip_id.clone(),

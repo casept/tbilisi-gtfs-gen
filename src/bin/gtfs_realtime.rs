@@ -36,8 +36,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Map: route_id -> pattern_suffix -> Vec<trip_id>
     let mut route_patterns: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
     for trip in gtfs.trips.values() {
-        if let Some((_, suffix_and_idx)) = trip.id.split_once('-') {
-            if let Some((suffix, _)) = suffix_and_idx.split_once('-') {
+        if let Some((_, suffix_and_idx)) = trip.id.split_once('-')
+            && let Some((suffix, _)) = suffix_and_idx.split_once('-') {
                 route_patterns
                     .entry(trip.route_id.clone())
                     .or_default()
@@ -45,7 +45,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .or_default()
                     .push(trip.id.clone());
             }
-        }
     }
 
     let mut entities = Vec::new();
@@ -110,15 +109,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .stop_times
                             .iter()
                             .find(|st| st.stop.id == *next_stop_id)
-                        {
-                            if let Some(arrival) = st.arrival_time {
+                            && let Some(arrival) = st.arrival_time {
                                 let diff = (arrival as i64 - seconds_since_midnight as i64).abs();
                                 if diff < min_diff {
                                     min_diff = diff;
                                     best_trip_id = Some(trip_id.clone());
                                 }
                             }
-                        }
                     }
                 }
 
