@@ -2,6 +2,7 @@ use gtfs_generator::GtfsGenerator;
 use gtfs_structures::{
     Agency, Calendar, DirectionType, RawStopTime, RawTrip, Route, RouteType, Stop,
 };
+use log::*;
 use rayon::prelude::*;
 use reqwest::header::{HeaderMap, HeaderValue};
 use rgb::RGB8;
@@ -72,11 +73,14 @@ fn parse_color(hex: &str) -> RGB8 {
         let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
         RGB8::new(r, g, b)
     } else {
+        warn!("Cannot parse color \"{hex}\", returning default");
         RGB8::new(255, 255, 255)
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
+
     let mut headers = HeaderMap::new();
     headers.insert("X-api-key", HeaderValue::from_static(API_KEY));
     let client = reqwest::blocking::Client::builder()
@@ -98,6 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })?;
 
         // Add a single service for all days
+        // FIXME: Probably not true
         let service_id = "EVERYDAY".to_string();
         g.add_service(Calendar {
             id: service_id.clone(),
@@ -113,7 +118,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })?;
     }
 
-    println!("Fetching stops...");
+    info!("Fetching stops...");
     let ttc_stops: Vec<TtcStop> = client
         .get(format!("{}/v2/stops?locale=en", BASE_URL))
         .send()?
@@ -132,7 +137,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("Fetching routes...");
+    info!("Fetching routes...");
     let ttc_routes: Vec<TtcRoute> = client
         .get(format!("{}/v3/routes?locale=en", BASE_URL))
         .send()?
@@ -152,7 +157,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "SUBWAY" => RouteType::Subway,
             "BUS" => RouteType::Bus,
             "GONDOLA" => RouteType::Gondola,
-            _ => RouteType::Bus,
+            _ => {
+                warn!("Unknown mode \"{}\", treating as bus", r.mode);
+                RouteType::Bus
+            },
         };
 
         {
@@ -170,15 +178,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Fetch route details to get patterns
+        let detail_url = format!("{}/v3/routes/{}?locale=en", BASE_URL, r.id);
         let detail_res = client
-            .get(format!("{}/v3/routes/{}?locale=en", BASE_URL, r.id))
+            .get(detail_url.as_str())
             .send();
         let detail: TtcRouteDetail = match detail_res {
             Ok(resp) => match resp.json() {
                 Ok(d) => d,
-                Err(_) => return,
+                Err(e) => {
+                    warn!("Failed to parse route detail: {e:?}");
+                    return;
+                },
             },
-            Err(_) => return,
+            Err(e) => {
+                    warn!("Failed to get route detail from {detail_url}: {e:?}");
+                    return;
+            },
         };
 
         for pattern in detail.patterns {
@@ -186,10 +201,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "{}/v2/routes/{}/schedule?locale=en&patternSuffix={}",
                 BASE_URL, r.id, pattern.pattern_suffix
             );
-            let schedule: TtcSchedule = match client.get(schedule_url).send().and_then(|r| r.json())
+            let schedule: TtcSchedule = match client.get(schedule_url.clone()).send().and_then(|r| r.json())
             {
                 Ok(s) => s,
-                Err(_) => continue,
+                Err(e) => {
+                    warn!("Failed to retrieve schedule for pattern {pattern:?} from \"{schedule_url}\": {e:?}");
+                    return;
+                },
             };
 
             if let Some(ws) = schedule.weekday_schedules.first() {
@@ -215,6 +233,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let times: Vec<&str> = stop.arrival_times.split(',').collect();
                         if let Some(time_str) = times.get(trip_idx) {
                             if time_str.is_empty() {
+                                warn!("Empty arrival time for trip_idx {trip_idx}, stop_idx {stop_idx}, stop {stop:?}");
                                 continue;
                             }
 
@@ -233,6 +252,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             seconds += 24 * 3600;
                                         } else {
                                             // Real data error (non-monotonous time)
+                                            warn!("Trip invalid (non-monotonous time)");
                                             valid_trip = false;
                                             break;
                                         }
@@ -271,14 +291,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        println!("Processed route {}", r.id);
+        info!("Processed route {}", r.id);
     });
 
     let g_final = Arc::try_unwrap(generator)
         .map_err(|_| "Arc unwrap failed")?
         .into_inner()?;
     g_final.write_to("gtfs.zip")?;
-    println!("Successfully generated GTFS feed to gtfs.zip");
+    info!("Successfully generated GTFS feed to gtfs.zip");
 
     Ok(())
 }
