@@ -8,42 +8,40 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use rgb::RGB8;
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
+use tbilisi_gtfs_gen::{API_KEY, BASE_URL};
 
-const API_KEY: &str = "c0a2f304-551a-4d08-b8df-2c53ecd57f9f";
-const BASE_URL: &str = "https://transit.ttc.com.ge/pis-gateway/api";
-
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 struct TtcRoute {
-    id: String,
-    short_name: String,
-    long_name: Option<String>,
-    color: String,
-    mode: String,
+    pub id: String,
+    pub short_name: String,
+    pub long_name: Option<String>,
+    pub color: String,
+    pub mode: String,
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct TtcRouteDetail {
-    patterns: Vec<TtcPattern>,
+    pub patterns: Vec<TtcPattern>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 struct TtcPattern {
-    pattern_suffix: String,
-    direction_id: u8,
-    headsign: String,
+    pub pattern_suffix: String,
+    pub direction_id: u8,
+    pub headsign: String,
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct TtcStop {
-    id: String,
-    code: Option<String>,
-    name: String,
-    lat: f64,
-    lon: f64,
+    pub id: String,
+    pub code: Option<String>,
+    pub name: String,
+    pub lat: f64,
+    pub lon: f64,
 }
 
 #[derive(Deserialize, Debug)]

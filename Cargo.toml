@@ -3,6 +3,14 @@ name = "tbilisi-gtfs-gen"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "gtfs-static"
+path = "src/bin/gtfs_static.rs"
+
+[[bin]]
+name = "gtfs-realtime"
+path = "src/bin/gtfs_realtime.rs"
+
 [dependencies]
 gtfs-generator = { git = "https://codeberg.org/jbb/gtfs-generator.git" }
 serde = { version = "1.0", features = ["derive"] }
@@ -14,3 +22,5 @@ chrono = "0.4"
 rayon = "1.10"
 log = { version = "0.4.29", features = ["std", "serde"] }
 env_logger = "0.11.10"
+gtfs-realtime = "0.2.0"
+prost = "0.14.3"
