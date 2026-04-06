@@ -114,8 +114,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             friday: true,
             saturday: true,
             sunday: true,
-            start_date: chrono::NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
-            end_date: chrono::NaiveDate::from_ymd_opt(2026, 12, 31).unwrap(),
+            start_date: chrono::Utc::now().with_timezone(&chrono_tz::Asia::Tbilisi).date_naive(),
+            end_date: chrono::Utc::now().with_timezone(&chrono_tz::Asia::Tbilisi).date_naive() + chrono::Duration::days(28),
         })?;
     }
 
