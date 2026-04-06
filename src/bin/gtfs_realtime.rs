@@ -7,7 +7,8 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
-use tbilisi_gtfs_gen::{API_KEY, BASE_URL};
+use std::sync::Arc;
+use tbilisi_gtfs_gen::*;
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         - chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap())
     .num_seconds() as u32;
 
+    let rate_limiter = Arc::new(RateLimiter::new());
     for (route_id, patterns) in &route_patterns {
         let suffixes: Vec<String> = patterns.keys().cloned().collect();
         let suffix_str = suffixes.join(",");
@@ -57,8 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
 
         debug!("Requesting positions for route {route_id}, patterns {route_patterns:?} from {url}");
-        let response = ureq::get(&url).set("X-api-key", API_KEY).call();
-        let resp: TtcPositionsResponse = match response {
+        let resp: TtcPositionsResponse = match fetch_with_retry(&url, &rate_limiter) {
             Ok(r) => match r.into_json() {
                 Ok(data) => data,
                 Err(e) => {
@@ -66,12 +67,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
             },
-            Err(ureq::Error::Status(code, _)) => {
-                warn!("Failed to fetch positions for route {route_id} from {url}: Status {code}");
-                continue;
-            }
             Err(e) => {
-                warn!("Request failed for route {route_id} from {url}: {e:?}");
+                warn!("Failed to fetch positions for route {route_id} from {url}: {e:?}");
                 continue;
             }
         };

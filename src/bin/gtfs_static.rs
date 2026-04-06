@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use rgb::RGB8;
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
-use tbilisi_gtfs_gen::{API_KEY, BASE_URL};
+use tbilisi_gtfs_gen::*;
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -76,10 +76,11 @@ fn parse_color(hex: &str) -> RGB8 {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     env_logger::init();
 
     let generator = Arc::new(Mutex::new(GtfsGenerator::new()));
+    let rate_limiter = Arc::new(RateLimiter::new());
 
     let agency_id = "TTC".to_string();
     {
@@ -119,10 +120,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     info!("Fetching stops...");
-    let ttc_stops: Vec<TtcStop> = ureq::get(&format!("{}/v2/stops?locale=en", BASE_URL))
-        .set("X-api-key", API_KEY)
-        .call()?
-        .into_json()?;
+    let ttc_stops: Vec<TtcStop> =
+        fetch_with_retry(&format!("{}/v2/stops?locale=en", BASE_URL), &rate_limiter)?
+            .into_json()?;
     {
         let mut g = generator.lock().unwrap();
         for s in &ttc_stops {
@@ -138,14 +138,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     info!("Fetching routes...");
-    let ttc_routes: Vec<TtcRoute> = ureq::get(&format!("{}/v3/routes?locale=en", BASE_URL))
-        .set("X-api-key", API_KEY)
-        .call()?
-        .into_json()?;
+    let ttc_routes: Vec<TtcRoute> =
+        fetch_with_retry(&format!("{}/v3/routes?locale=en", BASE_URL), &rate_limiter)?
+            .into_json()?;
 
     let service_id = "EVERYDAY".to_string();
 
     ttc_routes.par_iter().for_each(|r| {
+        info!("Fetching route {}", r.id);
+        let rate_limiter = Arc::clone(&rate_limiter);
         let route_type = match r.mode.as_str() {
             "SUBWAY" => RouteType::Subway,
             "BUS" => RouteType::Bus,
@@ -172,18 +173,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Fetch route details to get patterns
         let detail_url = format!("{}/v3/routes/{}?locale=en", BASE_URL, r.id);
-        let detail_res = ureq::get(&detail_url).set("X-api-key", API_KEY).call();
-        let detail: TtcRouteDetail = match detail_res {
-            Ok(resp) => match resp.into_json() {
-                Ok(d) => d,
-                Err(e) => {
-                    warn!("Failed to parse route detail: {e:?}");
-                    return;
-                },
-            },
+        let detail: TtcRouteDetail = match fetch_with_retry(&detail_url, &rate_limiter)
+            .and_then(|r| r.into_json().map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>))
+        {
+            Ok(d) => d,
             Err(e) => {
-                    warn!("Failed to get route detail from {detail_url}: {e:?}");
-                    return;
+                warn!("Failed to get route detail from {detail_url}: {e:?}");
+                return;
             },
         };
 
@@ -192,10 +188,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "{}/v2/routes/{}/schedule?locale=en&patternSuffix={}",
                 BASE_URL, r.id, pattern.pattern_suffix
             );
-            let schedule: TtcSchedule = match ureq::get(&schedule_url)
-                .set("X-api-key", API_KEY)
-                .call()
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+            let schedule: TtcSchedule = match fetch_with_retry(&schedule_url, &rate_limiter)
                 .and_then(|r| r.into_json().map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>))
             {
                 Ok(s) => s,
