@@ -2,7 +2,7 @@ use gtfs_realtime::*;
 use gtfs_structures::Gtfs;
 use log::*;
 use prost::Message;
-use reqwest::header::{HeaderMap, HeaderValue};
+
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs::File;
@@ -27,24 +27,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Loading static GTFS from gtfs.zip...");
     let gtfs = Gtfs::from_path("gtfs.zip")?;
 
-    let mut headers = HeaderMap::new();
-    headers.insert("X-api-key", HeaderValue::from_static(API_KEY));
-    let client = reqwest::blocking::Client::builder()
-        .default_headers(headers)
-        .build()?;
-
     // Map: route_id -> pattern_suffix -> Vec<trip_id>
     let mut route_patterns: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
     for trip in gtfs.trips.values() {
         if let Some((_, suffix_and_idx)) = trip.id.split_once('-')
-            && let Some((suffix, _)) = suffix_and_idx.split_once('-') {
-                route_patterns
-                    .entry(trip.route_id.clone())
-                    .or_default()
-                    .entry(suffix.to_string())
-                    .or_default()
-                    .push(trip.id.clone());
-            }
+            && let Some((suffix, _)) = suffix_and_idx.split_once('-')
+        {
+            route_patterns
+                .entry(trip.route_id.clone())
+                .or_default()
+                .entry(suffix.to_string())
+                .or_default()
+                .push(trip.id.clone());
+        }
     }
 
     let mut entities = Vec::new();
@@ -62,23 +57,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
 
         debug!("Requesting positions for route {route_id}, patterns {route_patterns:?} from {url}");
-        let response = client.get(&url).send();
+        let response = ureq::get(&url).set("X-api-key", API_KEY).call();
         let resp: TtcPositionsResponse = match response {
-            Ok(r) => {
-                if !r.status().is_success() {
-                    warn!(
-                        "Failed to fetch positions for route {route_id} from {url}: Status {}",
-                        r.status()
-                    );
+            Ok(r) => match r.into_json() {
+                Ok(data) => data,
+                Err(e) => {
+                    warn!("Failed to decode JSON for route {route_id} from {url}: {e:?}");
                     continue;
                 }
-                match r.json() {
-                    Ok(data) => data,
-                    Err(e) => {
-                        warn!("Failed to decode JSON for route {route_id} from {url}: {e:?}");
-                        continue;
-                    }
-                }
+            },
+            Err(ureq::Error::Status(code, _)) => {
+                warn!("Failed to fetch positions for route {route_id} from {url}: Status {code}");
+                continue;
             }
             Err(e) => {
                 warn!("Request failed for route {route_id} from {url}: {e:?}");
@@ -109,13 +99,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .stop_times
                             .iter()
                             .find(|st| st.stop.id == *next_stop_id)
-                            && let Some(arrival) = st.arrival_time {
-                                let diff = (arrival as i64 - seconds_since_midnight as i64).abs();
-                                if diff < min_diff {
-                                    min_diff = diff;
-                                    best_trip_id = Some(trip_id.clone());
-                                }
+                            && let Some(arrival) = st.arrival_time
+                        {
+                            let diff = (arrival as i64 - seconds_since_midnight as i64).abs();
+                            if diff < min_diff {
+                                min_diff = diff;
+                                best_trip_id = Some(trip_id.clone());
                             }
+                        }
                     }
                 }
 

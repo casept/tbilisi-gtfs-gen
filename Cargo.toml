@@ -15,9 +15,9 @@ path = "src/bin/gtfs_realtime.rs"
 gtfs-generator = { git = "https://codeberg.org/jbb/gtfs-generator.git" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-gtfs-structures = "0.47"
+gtfs-structures = { version = "0.47", default-features = false }
 rgb = "0.8"
-reqwest = { version = "0.12", features = ["blocking", "json"] }
+ureq = { version = "2", features = ["json"] }
 chrono = "0.4"
 chrono-tz = "0.10"
 rayon = "1.10"

@@ -4,7 +4,7 @@ use gtfs_structures::{
 };
 use log::*;
 use rayon::prelude::*;
-use reqwest::header::{HeaderMap, HeaderValue};
+
 use rgb::RGB8;
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
@@ -79,12 +79,6 @@ fn parse_color(hex: &str) -> RGB8 {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let mut headers = HeaderMap::new();
-    headers.insert("X-api-key", HeaderValue::from_static(API_KEY));
-    let client = reqwest::blocking::Client::builder()
-        .default_headers(headers)
-        .build()?;
-
     let generator = Arc::new(Mutex::new(GtfsGenerator::new()));
 
     let agency_id = "TTC".to_string();
@@ -114,16 +108,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             friday: true,
             saturday: true,
             sunday: true,
-            start_date: chrono::Utc::now().with_timezone(&chrono_tz::Asia::Tbilisi).date_naive(),
-            end_date: chrono::Utc::now().with_timezone(&chrono_tz::Asia::Tbilisi).date_naive() + chrono::Duration::days(28),
+            start_date: chrono::Utc::now()
+                .with_timezone(&chrono_tz::Asia::Tbilisi)
+                .date_naive(),
+            end_date: chrono::Utc::now()
+                .with_timezone(&chrono_tz::Asia::Tbilisi)
+                .date_naive()
+                + chrono::Duration::days(28),
         })?;
     }
 
     info!("Fetching stops...");
-    let ttc_stops: Vec<TtcStop> = client
-        .get(format!("{}/v2/stops?locale=en", BASE_URL))
-        .send()?
-        .json()?;
+    let ttc_stops: Vec<TtcStop> = ureq::get(&format!("{}/v2/stops?locale=en", BASE_URL))
+        .set("X-api-key", API_KEY)
+        .call()?
+        .into_json()?;
     {
         let mut g = generator.lock().unwrap();
         for s in &ttc_stops {
@@ -139,21 +138,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     info!("Fetching routes...");
-    let ttc_routes: Vec<TtcRoute> = client
-        .get(format!("{}/v3/routes?locale=en", BASE_URL))
-        .send()?
-        .json()?;
+    let ttc_routes: Vec<TtcRoute> = ureq::get(&format!("{}/v3/routes?locale=en", BASE_URL))
+        .set("X-api-key", API_KEY)
+        .call()?
+        .into_json()?;
 
     let service_id = "EVERYDAY".to_string();
 
     ttc_routes.par_iter().for_each(|r| {
-        let mut headers = HeaderMap::new();
-        headers.insert("X-api-key", HeaderValue::from_static(API_KEY));
-        let client = reqwest::blocking::Client::builder()
-            .default_headers(headers)
-            .build()
-            .unwrap();
-
         let route_type = match r.mode.as_str() {
             "SUBWAY" => RouteType::Subway,
             "BUS" => RouteType::Bus,
@@ -180,11 +172,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Fetch route details to get patterns
         let detail_url = format!("{}/v3/routes/{}?locale=en", BASE_URL, r.id);
-        let detail_res = client
-            .get(detail_url.as_str())
-            .send();
+        let detail_res = ureq::get(&detail_url).set("X-api-key", API_KEY).call();
         let detail: TtcRouteDetail = match detail_res {
-            Ok(resp) => match resp.json() {
+            Ok(resp) => match resp.into_json() {
                 Ok(d) => d,
                 Err(e) => {
                     warn!("Failed to parse route detail: {e:?}");
@@ -202,7 +192,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "{}/v2/routes/{}/schedule?locale=en&patternSuffix={}",
                 BASE_URL, r.id, pattern.pattern_suffix
             );
-            let schedule: TtcSchedule = match client.get(schedule_url.clone()).send().and_then(|r| r.json())
+            let schedule: TtcSchedule = match ureq::get(&schedule_url)
+                .set("X-api-key", API_KEY)
+                .call()
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+                .and_then(|r| r.into_json().map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>))
             {
                 Ok(s) => s,
                 Err(e) => {
@@ -252,8 +246,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         if prev - seconds > 12 * 3600 {
                                             seconds += 24 * 3600;
                                         } else {
-                                            // Real data error (non-monotonous time)
-                                            warn!("Trip invalid (non-monotonous time)");
+                                            warn!("Trip invalid (time jumps backwards). time_str = {time_str}, h = {h}, m = {m}, seconds = {seconds}, seconds_prev = {prev}");
                                             valid_trip = false;
                                             break;
                                         }
