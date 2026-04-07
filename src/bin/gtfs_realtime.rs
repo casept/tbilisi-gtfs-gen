@@ -40,12 +40,23 @@ struct TtcVehicle {
 
 type TtcPositionsResponse = HashMap<String, Vec<TtcVehicle>>;
 
+struct FeedStats {
+    matched: u32,
+    no_next_stop: u32,
+    stop_not_in_trips: u32,
+}
+
 fn build_feed(
     gtfs: &Gtfs,
     route_patterns: &HashMap<String, HashMap<String, Vec<String>>>,
     rate_limiter: &Arc<RateLimiter>,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut entities = Vec::new();
+    let mut stats = FeedStats {
+        matched: 0,
+        no_next_stop: 0,
+        stop_not_in_trips: 0,
+    };
     let now = chrono::Utc::now();
     let seconds_since_midnight = (now.naive_utc().time()
         - chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap())
@@ -86,6 +97,8 @@ fn build_feed(
             for vehicle in vehicles {
                 // Try to find the best trip_id
                 let mut best_trip_id = None;
+                // The matched stop's scheduled arrival time (GTFS seconds); used to derive start_date.
+                let mut best_trip_arrival: Option<u32> = None;
 
                 if let Some(ref next_stop_id) = vehicle.next_stop_id {
                     let mut min_diff = i64::MAX;
@@ -99,14 +112,51 @@ fn build_feed(
                             .find(|st| st.stop.id == *next_stop_id)
                             && let Some(arrival) = st.arrival_time
                         {
-                            let diff = (arrival as i64 - seconds_since_midnight as i64).abs();
+                            // Compare against wall-clock position within the current day cycle.
+                            // GTFS times can exceed 86400 for post-midnight trips; normalise by
+                            // taking mod 86400 so the diff is in same-day seconds.
+                            let arrival_in_day = (arrival % 86400) as i64;
+                            let diff = (arrival_in_day - seconds_since_midnight as i64).abs();
                             if diff < min_diff {
                                 min_diff = diff;
                                 best_trip_id = Some(trip_id.clone());
+                                best_trip_arrival = Some(arrival);
                             }
                         }
                     }
+
+                    if best_trip_id.is_none() {
+                        stats.stop_not_in_trips += 1;
+                        warn!(
+                            "Vehicle {}: next_stop_id={next_stop_id} not found (with arrival_time) in any of {} candidate trips for route {route_id} suffix \"{suffix}\" — trip_id will be absent",
+                            vehicle.vehicle_id,
+                            possible_trip_ids.len(),
+                        );
+                    }
+                } else {
+                    stats.no_next_stop += 1;
+                    debug!(
+                        "Vehicle {}: no next_stop_id reported, cannot match trip — trip_id will be absent",
+                        vehicle.vehicle_id
+                    );
                 }
+
+                // Derive the service date from the matched stop's scheduled arrival time.
+                // GTFS times ≥ 86400 belong to a trip whose service date is one or more days ago
+                // (e.g. arrival_time = 90000 → 25 h → the trip started yesterday).
+                let start_date = best_trip_arrival
+                    .map(|arrival| {
+                        let days_offset = (arrival / 86400) as i64;
+                        let date = (now - chrono::Duration::days(days_offset))
+                            .format("%Y%m%d")
+                            .to_string();
+                        debug!(
+                            "Vehicle {}: arrival_time={}s, days_offset={}, start_date={}",
+                            vehicle.vehicle_id, arrival, days_offset, date
+                        );
+                        date
+                    })
+                    .unwrap_or_else(|| now.format("%Y%m%d").to_string());
 
                 debug!(
                     "Vehicle {}: pos=({:.6}, {:.6}), next_stop={:?}, matched_trip={:?}",
@@ -120,9 +170,11 @@ fn build_feed(
                 // If we couldn't match by next_stop_id, or it was missing, maybe just use the first trip that's active?
                 // For now, if we have no next_stop_id, we can't do much better than just providing route_id.
 
+                let trip_id_present = best_trip_id.is_some();
                 let trip_descriptor = TripDescriptor {
                     trip_id: best_trip_id,
                     route_id: Some(route_id.clone()),
+                    start_date: Some(start_date),
                     ..Default::default()
                 };
 
@@ -152,6 +204,9 @@ fn build_feed(
                     vehicle: Some(vehicle_position),
                     ..Default::default()
                 });
+                if trip_id_present {
+                    stats.matched += 1;
+                }
             }
         }
         info!("Processed positions for route {}", route_id);
@@ -173,7 +228,10 @@ fn build_feed(
     let mut buf = Vec::new();
     message.encode(&mut buf)?;
 
-    info!("Refreshed GTFS-RT feed with {} entities", num_entities);
+    info!(
+        "Refreshed GTFS-RT feed: {} entities total — {} with trip_id, {} without next_stop_id, {} with next_stop_id not matched in trips",
+        num_entities, stats.matched, stats.no_next_stop, stats.stop_not_in_trips
+    );
 
     Ok(buf)
 }
@@ -200,6 +258,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .entry(suffix.to_string())
                 .or_default()
                 .push(trip.id.clone());
+        } else {
+            warn!(
+                "Trip {} (route {}) has an unexpected ID format (expected \"<route>-<suffix>-<idx>\") — it will never be matched to a vehicle",
+                trip.id, trip.route_id
+            );
         }
     }
     let route_patterns = Arc::new(route_patterns);
