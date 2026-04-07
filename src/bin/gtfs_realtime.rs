@@ -5,9 +5,10 @@ use prost::Message;
 
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::Write;
-use std::sync::Arc;
+use std::io::Cursor;
+use std::sync::{Arc, RwLock};
+use std::thread;
+use std::time::Duration;
 use tbilisi_gtfs_gen::*;
 
 #[derive(Deserialize, Debug)]
@@ -22,35 +23,18 @@ struct TtcVehicle {
 
 type TtcPositionsResponse = HashMap<String, Vec<TtcVehicle>>;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::init();
-
-    info!("Loading static GTFS from gtfs.zip...");
-    let gtfs = Gtfs::from_path("gtfs.zip")?;
-
-    // Map: route_id -> pattern_suffix -> Vec<trip_id>
-    let mut route_patterns: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
-    for trip in gtfs.trips.values() {
-        if let Some((_, suffix_and_idx)) = trip.id.split_once('-')
-            && let Some((suffix, _)) = suffix_and_idx.split_once('-')
-        {
-            route_patterns
-                .entry(trip.route_id.clone())
-                .or_default()
-                .entry(suffix.to_string())
-                .or_default()
-                .push(trip.id.clone());
-        }
-    }
-
+fn build_feed(
+    gtfs: &Gtfs,
+    route_patterns: &HashMap<String, HashMap<String, Vec<String>>>,
+    rate_limiter: &Arc<RateLimiter>,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut entities = Vec::new();
     let now = chrono::Utc::now();
     let seconds_since_midnight = (now.naive_utc().time()
         - chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap())
     .num_seconds() as u32;
 
-    let rate_limiter = Arc::new(RateLimiter::new());
-    for (route_id, patterns) in &route_patterns {
+    for (route_id, patterns) in route_patterns {
         let suffixes: Vec<String> = patterns.keys().cloned().collect();
         let suffix_str = suffixes.join(",");
         let url = format!(
@@ -59,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
 
         debug!("Requesting positions for route {route_id}, patterns {route_patterns:?} from {url}");
-        let resp: TtcPositionsResponse = match fetch_with_retry(&url, &rate_limiter) {
+        let resp: TtcPositionsResponse = match fetch_with_retry(&url, rate_limiter) {
             Ok(r) => match r.into_json() {
                 Ok(data) => data,
                 Err(e) => {
@@ -172,13 +156,102 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = Vec::new();
     message.encode(&mut buf)?;
 
-    let mut file = File::create("gtfs-rt.pb")?;
-    file.write_all(&buf)?;
+    info!("Refreshed GTFS-RT feed with {} entities", num_entities);
 
-    info!(
-        "Successfully wrote GTFS-RT feed with {} entities to gtfs-rt.pb",
-        num_entities
-    );
+    Ok(buf)
+}
+
+const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:9876";
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
+
+    info!("Loading static GTFS from gtfs.zip...");
+    let gtfs = Arc::new(Gtfs::from_path("gtfs.zip")?);
+
+    let mut route_patterns: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
+    for trip in gtfs.trips.values() {
+        if let Some((_, suffix_and_idx)) = trip.id.split_once('-')
+            && let Some((suffix, _)) = suffix_and_idx.split_once('-')
+        {
+            route_patterns
+                .entry(trip.route_id.clone())
+                .or_default()
+                .entry(suffix.to_string())
+                .or_default()
+                .push(trip.id.clone());
+        }
+    }
+    let route_patterns = Arc::new(route_patterns);
+
+    let rate_limiter = Arc::new(RateLimiter::new());
+
+    // None until the first build completes; HTTP server returns 503 in the meantime.
+    let feed_bytes: Arc<RwLock<Option<Vec<u8>>>> = Arc::new(RwLock::new(None));
+
+    // Background thread: build the feed immediately, then refresh periodically.
+    {
+        let feed_bytes = Arc::clone(&feed_bytes);
+        let gtfs = Arc::clone(&gtfs);
+        let route_patterns = Arc::clone(&route_patterns);
+        let rate_limiter = Arc::clone(&rate_limiter);
+        thread::spawn(move || {
+            loop {
+                match build_feed(&gtfs, &route_patterns, &rate_limiter) {
+                    Ok(buf) => *feed_bytes.write().unwrap() = Some(buf),
+                    Err(e) => warn!("Failed to refresh GTFS-RT feed: {e:?}"),
+                }
+                thread::sleep(REFRESH_INTERVAL);
+            }
+        });
+    }
+
+    let listen_addr =
+        std::env::var("LISTEN_ADDR").unwrap_or_else(|_| DEFAULT_LISTEN_ADDR.to_string());
+    info!("Listening on http://{listen_addr}/gtfs-rt.pb");
+    let server = tiny_http::Server::http(&listen_addr).expect("Failed to bind HTTP server");
+
+    for request in server.incoming_requests() {
+        let url = request.url().to_owned();
+        if url == "/gtfs-rt.pb" {
+            let maybe_data = feed_bytes.read().unwrap().clone();
+            match maybe_data {
+                None => {
+                    let response = tiny_http::Response::from_string("Feed not yet ready")
+                        .with_status_code(tiny_http::StatusCode(503));
+                    if let Err(e) = request.respond(response) {
+                        warn!("Failed to send 503 response: {e:?}");
+                    }
+                }
+                Some(data) => {
+                    let len = data.len();
+                    let response = tiny_http::Response::new(
+                        tiny_http::StatusCode(200),
+                        vec![
+                            tiny_http::Header::from_bytes(
+                                &b"Content-Type"[..],
+                                &b"application/octet-stream"[..],
+                            )
+                            .unwrap(),
+                        ],
+                        Cursor::new(data),
+                        Some(len),
+                        None,
+                    );
+                    if let Err(e) = request.respond(response) {
+                        warn!("Failed to send response: {e:?}");
+                    }
+                }
+            }
+        } else {
+            let response = tiny_http::Response::from_string("Not Found")
+                .with_status_code(tiny_http::StatusCode(404));
+            if let Err(e) = request.respond(response) {
+                warn!("Failed to send 404 response: {e:?}");
+            }
+        }
+    }
 
     Ok(())
 }
