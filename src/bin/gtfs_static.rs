@@ -1,4 +1,5 @@
 use argh::FromArgs;
+use chrono::{NaiveTime, Timelike};
 use gtfs_generator::GtfsGenerator;
 use gtfs_structures::{
     Agency, Calendar, DirectionType, RawStopTime, RawTranslation, RawTrip, Route, RouteType, Shape,
@@ -124,6 +125,17 @@ fn make_calendar(from_day: &str, to_day: &str) -> Calendar {
 struct TtcScheduleStop {
     id: String,
     arrival_times: String,
+}
+
+/// Parse a GTFS time string ("HH:MM") into seconds since midnight.
+/// GTFS allows hours >= 24 for trips running past midnight (e.g. "25:30").
+fn parse_gtfs_time(time_str: &str) -> Option<u32> {
+    let (h_str, m_str) = time_str.split_once(':')?;
+    let h: u32 = h_str.parse().ok()?;
+    // Clamp hours into the 0–23 range so chrono can parse, then restore the extra days.
+    let normalized = format!("{:02}:{m_str}", h % 24);
+    let t = NaiveTime::parse_from_str(&normalized, "%H:%M").ok()?;
+    Some((h / 24) * 86400 + t.num_seconds_from_midnight())
 }
 
 fn parse_color(hex: &str) -> RGB8 {
@@ -470,12 +482,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 continue;
                             }
 
-                            let parts: Vec<&str> = time_str.split(':').collect();
-                            if parts.len() == 2 {
-                                let h: u32 = parts[0].parse().unwrap_or(0);
-                                let m: u32 = parts[1].parse().unwrap_or(0);
-                                let mut seconds = h * 3600 + m * 60;
-
+                            if let Some(mut seconds) = parse_gtfs_time(time_str) {
                                 // Handle times past midnight (24:xx, 25:xx etc)
                                 if let Some(prev) = last_time
                                     && seconds < prev {
@@ -484,7 +491,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                         if prev - seconds > 12 * 3600 {
                                             seconds += 24 * 3600;
                                         } else {
-                                            warn!("Trip invalid (time jumps backwards). time_str = {time_str}, h = {h}, m = {m}, seconds = {seconds}, seconds_prev = {prev}");
+                                            warn!("Trip invalid (time jumps backwards). time_str = {time_str}, seconds = {seconds}, seconds_prev = {prev}");
                                             valid_trip = false;
                                             break;
                                         }
@@ -499,6 +506,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     ..Default::default()
                                 });
                                 last_time = Some(seconds);
+                            } else {
+                                warn!("Cannot parse arrival time \"{time_str}\" for trip_idx {trip_idx}, stop_idx {stop_idx}");
                             }
                         }
                     }
