@@ -68,7 +68,55 @@ struct TtcSchedule {
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct TtcWeekdaySchedule {
+    from_day: String,
+    to_day: String,
     stops: Vec<TtcScheduleStop>,
+}
+
+/// Return the 0-based index (Mon=0 … Sun=6) for a day name, or 7 if unknown.
+fn day_idx(day: &str) -> u8 {
+    match day {
+        "MONDAY" => 0,
+        "TUESDAY" => 1,
+        "WEDNESDAY" => 2,
+        "THURSDAY" => 3,
+        "FRIDAY" => 4,
+        "SATURDAY" => 5,
+        "SUNDAY" => 6,
+        _ => 7,
+    }
+}
+
+/// Build a GTFS `Calendar` from a `fromDay`/`toDay` range such as `"MONDAY"`/`"FRIDAY"`.
+/// The service ID is `"<FROM_DAY>-<TO_DAY>"` (e.g. `"MONDAY-FRIDAY"`).
+fn make_calendar(from_day: &str, to_day: &str) -> Calendar {
+    let from = day_idx(from_day);
+    let to = day_idx(to_day);
+    let in_range = |d: u8| -> bool {
+        if from <= to {
+            d >= from && d <= to
+        } else {
+            // wrap-around (e.g. FRIDAY–MONDAY)
+            d >= from || d <= to
+        }
+    };
+    Calendar {
+        id: format!("{}-{}", from_day, to_day),
+        monday: in_range(0),
+        tuesday: in_range(1),
+        wednesday: in_range(2),
+        thursday: in_range(3),
+        friday: in_range(4),
+        saturday: in_range(5),
+        sunday: in_range(6),
+        start_date: chrono::Utc::now()
+            .with_timezone(&chrono_tz::Asia::Tbilisi)
+            .date_naive(),
+        end_date: chrono::Utc::now()
+            .with_timezone(&chrono_tz::Asia::Tbilisi)
+            .date_naive()
+            + chrono::Duration::days(28),
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -190,27 +238,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             email: Some("info@metro.ge".to_string()),
             phone: Some("032 293 44 44".to_string()),
         })?;
-
-        // Add a single service for all days
-        // FIXME: Probably not true
-        let service_id = "EVERYDAY".to_string();
-        g.add_service(Calendar {
-            id: service_id.clone(),
-            monday: true,
-            tuesday: true,
-            wednesday: true,
-            thursday: true,
-            friday: true,
-            saturday: true,
-            sunday: true,
-            start_date: chrono::Utc::now()
-                .with_timezone(&chrono_tz::Asia::Tbilisi)
-                .date_naive(),
-            end_date: chrono::Utc::now()
-                .with_timezone(&chrono_tz::Asia::Tbilisi)
-                .date_naive()
-                + chrono::Duration::days(28),
-        })?;
     }
 
     info!("Fetching stops...");
@@ -270,8 +297,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .map(|r| (r.id.clone(), r))
             .collect(),
     );
-
-    let service_id = "EVERYDAY".to_string();
 
     ttc_routes_ka.par_iter().for_each(|r| {
         info!("Fetching route {}", r.id);
@@ -412,7 +437,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 },
             };
 
-            if let Some(ws) = schedule.weekday_schedules.first() {
+            for (ws_idx, ws) in schedule.weekday_schedules.iter().enumerate() {
+                let service_id = format!("{}-{}", ws.from_day, ws.to_day);
+                {
+                    let mut g = generator.lock().unwrap();
+                    g.add_service(make_calendar(&ws.from_day, &ws.to_day)).ok();
+                }
+
                 let num_trips = ws
                     .stops
                     .first()
@@ -420,7 +451,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     .unwrap_or(0);
 
                 for trip_idx in 0..num_trips {
-                    let trip_id = format!("{}-{}-{}", r.id, pattern.pattern_suffix, trip_idx);
+                    let trip_id = format!("{}-{}-{}-{}", r.id, pattern.pattern_suffix, ws_idx, trip_idx);
                     let direction = if pattern.direction_id == 0 {
                         DirectionType::Outbound
                     } else {
