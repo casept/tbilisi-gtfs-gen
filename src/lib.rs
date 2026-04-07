@@ -44,7 +44,11 @@ pub fn fetch_with_retry(
             warn!("Retrying {url} (attempt {}/{})", attempt + 1, MAX_RETRIES);
         }
         rate_limiter.wait();
-        match ureq::get(url).set("X-api-key", API_KEY).call() {
+        match ureq::get(url)
+            .set("X-api-key", API_KEY)
+            .timeout(Duration::from_secs(30))
+            .call()
+        {
             Ok(resp) => return Ok(resp),
             Err(e) => {
                 // API seems to return 520 in case we're too fast,
