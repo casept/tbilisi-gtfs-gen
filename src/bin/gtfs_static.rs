@@ -453,8 +453,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     }
 
                     if valid_trip && !stop_times.is_empty() {
-                        let shape_id =
-                            format!("{}-{}", r.id, pattern.pattern_suffix);
+                        // Only reference a shape_id if the shape was actually fetched successfully
+                        let shape_id = route_shapes
+                            .contains_key(&pattern.pattern_suffix)
+                            .then(|| format!("{}-{}", r.id, pattern.pattern_suffix));
                         let mut g = generator.lock().unwrap();
                         g.add_trip(RawTrip {
                             id: trip_id.clone(),
@@ -462,7 +464,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             service_id: service_id.clone(),
                             trip_headsign: Some(pattern.headsign.clone()),
                             direction_id: Some(direction),
-                            shape_id: Some(shape_id),
+                            shape_id,
                             ..Default::default()
                         })
                         .ok();
