@@ -1,13 +1,14 @@
 use argh::FromArgs;
 use gtfs_generator::GtfsGenerator;
 use gtfs_structures::{
-    Agency, Calendar, DirectionType, RawStopTime, RawTrip, Route, RouteType, Stop,
+    Agency, Calendar, DirectionType, RawStopTime, RawTrip, Route, RouteType, Shape, Stop,
 };
 use log::*;
 use rayon::prelude::*;
 
 use rgb::RGB8;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tbilisi_gtfs_gen::*;
 
@@ -87,6 +88,83 @@ fn parse_color(hex: &str) -> RGB8 {
         warn!("Cannot parse color \"{hex}\", returning default");
         RGB8::new(255, 255, 255)
     }
+}
+
+use crate::{BASE_URL, RateLimiter, fetch_with_retry};
+
+#[derive(Deserialize, Debug)]
+struct TtcPolylineEntry {
+    #[serde(rename = "encodedValue")]
+    encoded_value: String,
+}
+
+type TtcPolylineResponse = HashMap<String, TtcPolylineEntry>;
+
+/// Precision used by the TTC encoded polyline (standard Google polyline algorithm).
+const POLYLINE_PRECISION: u32 = 5;
+
+/// Decode an encoded polyline string into GTFS Shape points for the given `shape_id`.
+///
+/// In geo-types coordinates, `x` is longitude and `y` is latitude.
+fn decode_shape(
+    shape_id: &str,
+    encoded: &str,
+) -> Result<Vec<Shape>, polyline::errors::PolylineError> {
+    let line_string = polyline::decode_polyline(encoded, POLYLINE_PRECISION)?;
+    Ok(line_string
+        .0
+        .into_iter()
+        .enumerate()
+        .map(|(seq, coord)| Shape {
+            id: shape_id.to_string(),
+            latitude: coord.y,
+            longitude: coord.x,
+            sequence: seq,
+            dist_traveled: None,
+        })
+        .collect())
+}
+
+/// Fetch and decode shapes for all patterns of a route in individual API calls.
+///
+/// Returns a map from `pattern_suffix` → `Vec<Shape>`. Patterns for which the
+/// API call or polyline decoding fails are omitted with a warning.
+pub fn fetch_shapes_for_route(
+    route_id: &str,
+    pattern_suffixes: &[String],
+    rate_limiter: &RateLimiter,
+) -> HashMap<String, Vec<Shape>> {
+    let mut result = HashMap::new();
+    for suffix in pattern_suffixes {
+        let url = format!(
+            "{}/v3/routes/{}/polylines?patternSuffixes={}",
+            BASE_URL, route_id, suffix
+        );
+        let resp: TtcPolylineResponse = match fetch_with_retry(&url, rate_limiter).and_then(|r| {
+            r.into_json()
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        }) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Failed to fetch polyline for route {route_id} pattern {suffix}: {e}");
+                continue;
+            }
+        };
+        for (resp_suffix, entry) in resp {
+            let shape_id = format!("{}-{}", route_id, resp_suffix);
+            match decode_shape(&shape_id, &entry.encoded_value) {
+                Ok(shapes) => {
+                    result.insert(resp_suffix, shapes);
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to decode polyline for route {route_id} pattern {resp_suffix}: {e}"
+                    );
+                }
+            }
+        }
+    }
+    result
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -199,6 +277,18 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             },
         };
 
+        let pattern_suffixes: Vec<String> =
+            detail.patterns.iter().map(|p| p.pattern_suffix.clone()).collect();
+        let route_shapes = fetch_shapes_for_route(&r.id, &pattern_suffixes, &rate_limiter);
+        {
+            let mut g = generator.lock().unwrap();
+            for shape_vec in route_shapes.values() {
+                for shape in shape_vec {
+                    g.add_shape(shape.clone()).ok();
+                }
+            }
+        }
+
         for pattern in detail.patterns {
             let schedule_url = format!(
                 "{}/v2/routes/{}/schedule?locale=en&patternSuffix={}",
@@ -275,6 +365,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     }
 
                     if valid_trip && !stop_times.is_empty() {
+                        let shape_id =
+                            format!("{}-{}", r.id, pattern.pattern_suffix);
                         let mut g = generator.lock().unwrap();
                         g.add_trip(RawTrip {
                             id: trip_id.clone(),
@@ -282,6 +374,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             service_id: service_id.clone(),
                             trip_headsign: Some(pattern.headsign.clone()),
                             direction_id: Some(direction),
+                            shape_id: Some(shape_id),
                             ..Default::default()
                         })
                         .ok();

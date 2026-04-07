@@ -559,7 +559,7 @@ dependencies = [
 [[package]]
 name = "gtfs-generator"
 version = "0.1.4"
-source = "git+https://codeberg.org/jbb/gtfs-generator.git#6a8fe379f5d877cee3b86883386fb7c5a4705f1c"
+source = "git+https://codeberg.org/casept/gtfs-generator.git?branch=shapes#93e23be4e580d9b476c4d152f518e3c6af7ef54b"
 dependencies = [
  "csv",
  "geo",
@@ -1026,6 +1026,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "polyline"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f19cbf429afe5a5186d4c6ca7b246b446b2d18919eefdddb521792d57c874f67"
+dependencies = [
+ "geo-types",
+]
+
+[[package]]
 name = "portable-atomic"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1475,6 +1484,7 @@ dependencies = [
  "gtfs-realtime",
  "gtfs-structures",
  "log",
+ "polyline",
  "prost",
  "rayon",
  "rgb",
