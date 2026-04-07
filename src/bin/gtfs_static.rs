@@ -188,7 +188,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             fare_url: Some("https://ttc.com.ge/index.php/en/fares".to_string()),
             email: Some("info@metro.ge".to_string()),
             phone: Some("032 293 44 44".to_string()),
-            ..Default::default()
         })?;
 
         // Add a single service for all days

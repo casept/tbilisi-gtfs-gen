@@ -14,6 +14,12 @@ pub struct RateLimiter {
     last_request: Mutex<Instant>,
 }
 
+impl Default for RateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RateLimiter {
     pub fn new() -> Self {
         Self {
