@@ -1,7 +1,8 @@
 use argh::FromArgs;
 use gtfs_generator::GtfsGenerator;
 use gtfs_structures::{
-    Agency, Calendar, DirectionType, RawStopTime, RawTrip, Route, RouteType, Shape, Stop,
+    Agency, Calendar, DirectionType, RawStopTime, RawTranslation, RawTrip, Route, RouteType, Shape,
+    Stop,
 };
 use log::*;
 use rayon::prelude::*;
@@ -216,6 +217,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ttc_stops: Vec<TtcStop> =
         fetch_with_retry(&format!("{}/v2/stops?locale=en", BASE_URL), &rate_limiter)?
             .into_json()?;
+    let ttc_stops_ka: Vec<TtcStop> =
+        fetch_with_retry(&format!("{}/v2/stops?locale=ka", BASE_URL), &rate_limiter)?
+            .into_json()?;
+    let ka_stop_names: HashMap<String, String> =
+        ttc_stops_ka.into_iter().map(|s| (s.id, s.name)).collect();
     {
         let mut g = generator.lock().unwrap();
         for s in &ttc_stops {
@@ -227,6 +233,17 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 longitude: Some(s.lon),
                 ..Default::default()
             })?;
+            if let Some(ka_name) = ka_stop_names.get(&s.id) {
+                g.add_translation(RawTranslation {
+                    table_name: "stops".to_string(),
+                    field_name: "stop_name".to_string(),
+                    language: "ka".to_string(),
+                    translation: ka_name.clone(),
+                    record_id: Some(s.id.clone()),
+                    record_sub_id: None,
+                    field_value: None,
+                })?;
+            }
         }
     }
 
@@ -234,12 +251,22 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ttc_routes: Vec<TtcRoute> =
         fetch_with_retry(&format!("{}/v3/routes?locale=en", BASE_URL), &rate_limiter)?
             .into_json()?;
+    let ttc_routes_ka: Vec<TtcRoute> =
+        fetch_with_retry(&format!("{}/v3/routes?locale=ka", BASE_URL), &rate_limiter)?
+            .into_json()?;
+    let ka_routes: Arc<HashMap<String, TtcRoute>> = Arc::new(
+        ttc_routes_ka
+            .into_iter()
+            .map(|r| (r.id.clone(), r))
+            .collect(),
+    );
 
     let service_id = "EVERYDAY".to_string();
 
     ttc_routes.par_iter().for_each(|r| {
         info!("Fetching route {}", r.id);
         let rate_limiter = Arc::clone(&rate_limiter);
+        let ka_routes = Arc::clone(&ka_routes);
         let route_type = match r.mode.as_str() {
             "SUBWAY" => RouteType::Subway,
             "BUS" => RouteType::Bus,
@@ -262,6 +289,20 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 ..Default::default()
             })
             .ok();
+            if let Some(ka_route) = ka_routes.get(&r.id) {
+                if let Some(ref ka_long_name) = ka_route.long_name {
+                    g.add_translation(RawTranslation {
+                        table_name: "routes".to_string(),
+                        field_name: "route_long_name".to_string(),
+                        language: "ka".to_string(),
+                        translation: ka_long_name.clone(),
+                        record_id: Some(r.id.clone()),
+                        record_sub_id: None,
+                        field_value: None,
+                    })
+                    .ok();
+                }
+            }
         }
 
         // Fetch route details to get patterns
@@ -275,6 +316,54 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 return;
             },
         };
+
+        // Fetch Georgian route detail to get Georgian headsigns
+        let ka_detail_url = format!("{}/v3/routes/{}?locale=ka", BASE_URL, r.id);
+        let ka_detail: Option<TtcRouteDetail> = match fetch_with_retry(&ka_detail_url, &rate_limiter)
+            .and_then(|r| r.into_json().map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>))
+        {
+            Ok(d) => Some(d),
+            Err(e) => {
+                warn!("Failed to get Georgian route detail from {ka_detail_url}: {e:?}");
+                None
+            },
+        };
+
+        // Build map: en_headsign -> ka_headsign (deduplicated by field_value, valid for all trips
+        // with that headsign since headsigns on vehicles are in Georgian)
+        let headsign_translations: HashMap<String, String> = if let Some(ka_det) = ka_detail {
+            let ka_by_suffix: HashMap<String, String> = ka_det
+                .patterns
+                .into_iter()
+                .map(|p| (p.pattern_suffix, p.headsign))
+                .collect();
+            detail
+                .patterns
+                .iter()
+                .filter_map(|p| {
+                    ka_by_suffix
+                        .get(&p.pattern_suffix)
+                        .map(|ka| (p.headsign.clone(), ka.clone()))
+                })
+                .collect()
+        } else {
+            HashMap::new()
+        };
+        {
+            let mut g = generator.lock().unwrap();
+            for (en_headsign, ka_headsign) in &headsign_translations {
+                g.add_translation(RawTranslation {
+                    table_name: "trips".to_string(),
+                    field_name: "trip_headsign".to_string(),
+                    language: "ka".to_string(),
+                    translation: ka_headsign.clone(),
+                    record_id: None,
+                    record_sub_id: None,
+                    field_value: Some(en_headsign.clone()),
+                })
+                .ok();
+            }
+        }
 
         let pattern_suffixes: Vec<String> =
             detail.patterns.iter().map(|p| p.pattern_suffix.clone()).collect();
