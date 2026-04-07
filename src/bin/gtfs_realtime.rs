@@ -1,3 +1,4 @@
+use argh::FromArgs;
 use gtfs_realtime::*;
 use gtfs_structures::Gtfs;
 use log::*;
@@ -10,6 +11,22 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
 use tbilisi_gtfs_gen::*;
+
+/// Serve a GTFS-RT vehicle positions feed for Tbilisi public transport.
+#[derive(FromArgs)]
+struct Args {
+    /// path to the static GTFS zip to load (default: gtfs.zip)
+    #[argh(option, short = 'g', default = "String::from(\"gtfs.zip\")")]
+    gtfs_path: String,
+
+    /// address to listen on (e.g. 0.0.0.0:9876)
+    #[argh(option, short = 'l', default = "String::from(\"0.0.0.0:9876\")")]
+    listen_addr: String,
+
+    /// log level filter (e.g. trace, debug, info, warn, error; default: info)
+    #[argh(option, default = "String::from(\"info\")")]
+    log_level: String,
+}
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -162,13 +179,15 @@ fn build_feed(
 }
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
-const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:9876";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::init();
+    let args: Args = argh::from_env();
+    env_logger::Builder::new()
+        .parse_filters(&args.log_level)
+        .init();
 
-    info!("Loading static GTFS from gtfs.zip...");
-    let gtfs = Arc::new(Gtfs::from_path("gtfs.zip")?);
+    info!("Loading static GTFS from {}...", args.gtfs_path);
+    let gtfs = Arc::new(Gtfs::from_path(&args.gtfs_path)?);
 
     let mut route_patterns: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
     for trip in gtfs.trips.values() {
@@ -207,10 +226,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    let listen_addr =
-        std::env::var("LISTEN_ADDR").unwrap_or_else(|_| DEFAULT_LISTEN_ADDR.to_string());
-    info!("Listening on http://{listen_addr}/gtfs-rt.pb");
-    let server = tiny_http::Server::http(&listen_addr).expect("Failed to bind HTTP server");
+    info!("Listening on http://{}/gtfs-rt.pb", args.listen_addr);
+    let server = tiny_http::Server::http(&args.listen_addr).expect("Failed to bind HTTP server");
 
     for request in server.incoming_requests() {
         let url = request.url().to_owned();

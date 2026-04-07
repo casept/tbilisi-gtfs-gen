@@ -1,3 +1,4 @@
+use argh::FromArgs;
 use gtfs_generator::GtfsGenerator;
 use gtfs_structures::{
     Agency, Calendar, DirectionType, RawStopTime, RawTrip, Route, RouteType, Stop,
@@ -9,6 +10,18 @@ use rgb::RGB8;
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 use tbilisi_gtfs_gen::*;
+
+/// Generate a static GTFS feed for Tbilisi public transport.
+#[derive(FromArgs)]
+struct Args {
+    /// path to write the output GTFS zip (default: gtfs.zip)
+    #[argh(option, short = 'o', default = "String::from(\"gtfs.zip\")")]
+    output: String,
+
+    /// log level filter (e.g. trace, debug, info, warn, error; default: info)
+    #[argh(option, default = "String::from(\"info\")")]
+    log_level: String,
+}
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -77,7 +90,10 @@ fn parse_color(hex: &str) -> RGB8 {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    env_logger::init();
+    let args: Args = argh::from_env();
+    env_logger::Builder::new()
+        .parse_filters(&args.log_level)
+        .init();
 
     let generator = Arc::new(Mutex::new(GtfsGenerator::new()));
     let rate_limiter = Arc::new(RateLimiter::new());
@@ -283,8 +299,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let g_final = Arc::try_unwrap(generator)
         .map_err(|_| "Arc unwrap failed")?
         .into_inner()?;
-    g_final.write_to("gtfs.zip")?;
-    info!("Successfully generated GTFS feed to gtfs.zip");
+    g_final.write_to(&args.output)?;
+    info!("Successfully generated GTFS feed to {}", args.output);
 
     Ok(())
 }
