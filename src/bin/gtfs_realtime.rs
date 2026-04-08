@@ -57,8 +57,8 @@ fn build_feed(
         no_next_stop: 0,
         stop_not_in_trips: 0,
     };
-    let now = chrono::Utc::now();
-    let seconds_since_midnight = (now.naive_utc().time()
+    let now = chrono::Utc::now().with_timezone(&chrono_tz::Asia::Tbilisi);
+    let seconds_since_midnight = (now.naive_local().time()
         - chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap())
     .num_seconds() as u32;
 
