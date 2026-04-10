@@ -559,8 +559,9 @@ dependencies = [
 [[package]]
 name = "gtfs-generator"
 version = "0.1.4"
-source = "git+https://codeberg.org/casept/gtfs-generator.git?branch=shapes#93e23be4e580d9b476c4d152f518e3c6af7ef54b"
+source = "git+https://codeberg.org/jbb/gtfs-generator.git#7b35fed59e985442865af6310902de409667c0d6"
 dependencies = [
+ "chrono",
  "csv",
  "geo",
  "gtfs-structures",

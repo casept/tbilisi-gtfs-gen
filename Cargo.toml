@@ -12,7 +12,7 @@ name = "gtfs-realtime"
 path = "src/bin/gtfs_realtime.rs"
 
 [dependencies]
-gtfs-generator = { git = "https://codeberg.org/casept/gtfs-generator.git", branch = "shapes" }
+gtfs-generator = { git = "https://codeberg.org/jbb/gtfs-generator.git" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 gtfs-structures = { version = "0.47", default-features = false }
