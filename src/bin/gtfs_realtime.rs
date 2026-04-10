@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::{Arc, RwLock};
 use std::thread;
-use std::time::Duration;
+use std::time::Instant;
 use tbilisi_gtfs_gen::*;
 
 /// Serve a GTFS-RT vehicle positions feed for Tbilisi public transport.
@@ -62,7 +62,9 @@ fn build_feed(
         - chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap())
     .num_seconds() as u32;
 
+    let refresh_start = Instant::now();
     for (route_id, patterns) in route_patterns {
+        let route_start = Instant::now();
         let suffixes: Vec<String> = patterns.keys().cloned().collect();
         let suffix_str = suffixes.join(",");
         let url = format!(
@@ -70,7 +72,7 @@ fn build_feed(
             BASE_URL, route_id, suffix_str
         );
 
-        debug!("Requesting positions for route {route_id}, patterns {route_patterns:?} from {url}");
+        debug!("Requesting positions for route {route_id} from {url}");
         let resp: TtcPositionsResponse = match fetch_with_retry(&url, rate_limiter) {
             Ok(r) => match r.into_json() {
                 Ok(data) => data,
@@ -135,7 +137,7 @@ fn build_feed(
                     }
                 } else {
                     stats.no_next_stop += 1;
-                    debug!(
+                    warn!(
                         "Vehicle {}: no next_stop_id reported, cannot match trip — trip_id will be absent",
                         vehicle.vehicle_id
                     );
@@ -209,7 +211,11 @@ fn build_feed(
                 }
             }
         }
-        info!("Processed positions for route {}", route_id);
+        info!(
+            "Processed positions for route {} in {:.2?}",
+            route_id,
+            route_start.elapsed()
+        );
     }
 
     let header = FeedHeader {
@@ -229,14 +235,16 @@ fn build_feed(
     message.encode(&mut buf)?;
 
     info!(
-        "Refreshed GTFS-RT feed: {} entities total — {} with trip_id, {} without next_stop_id, {} with next_stop_id not matched in trips",
-        num_entities, stats.matched, stats.no_next_stop, stats.stop_not_in_trips
+        "Refreshed GTFS-RT feed in {:.2?}: {} entities total — {} with trip_id, {} without next_stop_id, {} with next_stop_id not matched in trips",
+        refresh_start.elapsed(),
+        num_entities,
+        stats.matched,
+        stats.no_next_stop,
+        stats.stop_not_in_trips
     );
 
     Ok(buf)
 }
-
-const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = argh::from_env();
@@ -284,7 +292,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(buf) => *feed_bytes.write().unwrap() = Some(buf),
                     Err(e) => warn!("Failed to refresh GTFS-RT feed: {e:?}"),
                 }
-                thread::sleep(REFRESH_INTERVAL);
             }
         });
     }
