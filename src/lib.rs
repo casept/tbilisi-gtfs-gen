@@ -39,9 +39,10 @@ impl RateLimiter {
 }
 
 pub fn fetch_with_retry(
+    agent: &ureq::Agent,
     url: &str,
     rate_limiter: &RateLimiter,
-) -> Result<ureq::Response, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<ureq::http::Response<ureq::Body>, Box<dyn std::error::Error + Send + Sync>> {
     const MAX_RETRIES: u32 = 12;
     let mut last_err: Option<ureq::Error> = None;
     let mut backoff = Duration::from_secs(1);
@@ -50,16 +51,12 @@ pub fn fetch_with_retry(
             warn!("Retrying {url} (attempt {}/{})", attempt + 1, MAX_RETRIES);
         }
         rate_limiter.wait();
-        match ureq::get(url)
-            .set("X-api-key", API_KEY)
-            .timeout(Duration::from_secs(30))
-            .call()
-        {
+        match agent.get(url).header("X-api-key", API_KEY).call() {
             Ok(resp) => return Ok(resp),
             Err(e) => {
                 // API seems to return 520 in case we're too fast,
                 // if that's the case practice exponential backoff
-                let is_520 = matches!(&e, ureq::Error::Status(520, _));
+                let is_520 = matches!(&e, ureq::Error::StatusCode(520));
                 if is_520 {
                     warn!(
                         "Got 520 for {url} (attempt {}/{}), backing off for {:?}",

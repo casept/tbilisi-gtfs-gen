@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::{Arc, RwLock};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tbilisi_gtfs_gen::*;
 
 /// Serve a GTFS-RT vehicle positions feed for Tbilisi public transport.
@@ -49,6 +49,7 @@ struct RouteResult {
 
 /// Fetch vehicle positions for a single route and match them to GTFS trips.
 fn fetch_route_entities(
+    agent: &ureq::Agent,
     gtfs: &Gtfs,
     route_id: &str,
     patterns: &HashMap<String, Vec<String>>,
@@ -67,7 +68,9 @@ fn fetch_route_entities(
     );
 
     debug!("Requesting positions for route {route_id} from {url}");
-    let resp: TtcPositionsResponse = fetch_with_retry(&url, rate_limiter)?.into_json()?;
+    let resp: TtcPositionsResponse = fetch_with_retry(agent, &url, rate_limiter)?
+        .body_mut()
+        .read_json()?;
 
     let mut result = RouteResult {
         entities: Vec::new(),
@@ -252,6 +255,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let route_patterns = Arc::new(route_patterns);
 
     let rate_limiter = Arc::new(RateLimiter::new());
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build()
+        .into();
 
     // Per-route entity map; updated incrementally as each route is fetched.
     // Empty until the first route completes; HTTP server returns 503 in the meantime.
@@ -265,6 +272,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let gtfs = Arc::clone(&gtfs);
         let route_patterns = Arc::clone(&route_patterns);
         let rate_limiter = Arc::clone(&rate_limiter);
+        let agent = agent.clone();
         thread::spawn(move || {
             loop {
                 let refresh_start = Instant::now();
@@ -274,7 +282,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 for (route_id, patterns) in route_patterns.iter() {
                     let route_start = Instant::now();
-                    match fetch_route_entities(&gtfs, route_id, patterns, &rate_limiter) {
+                    match fetch_route_entities(&agent, &gtfs, route_id, patterns, &rate_limiter) {
                         Ok(result) => {
                             total_matched += result.matched;
                             total_no_next_stop += result.no_next_stop;

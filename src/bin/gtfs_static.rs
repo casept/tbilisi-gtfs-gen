@@ -12,6 +12,7 @@ use rgb::RGB8;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tbilisi_gtfs_gen::*;
 
 /// Generate a static GTFS feed for Tbilisi public transport.
@@ -191,6 +192,7 @@ fn decode_shape(
 /// Returns a map from `pattern_suffix` → `Vec<Shape>`. Patterns for which the
 /// API call or polyline decoding fails are omitted with a warning.
 pub fn fetch_shapes_for_route(
+    agent: &ureq::Agent,
     route_id: &str,
     pattern_suffixes: &[String],
     rate_limiter: &RateLimiter,
@@ -201,16 +203,18 @@ pub fn fetch_shapes_for_route(
             "{}/v3/routes/{}/polylines?patternSuffixes={}",
             BASE_URL, route_id, suffix
         );
-        let resp: TtcPolylineResponse = match fetch_with_retry(&url, rate_limiter).and_then(|r| {
-            r.into_json()
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-        }) {
-            Ok(r) => r,
-            Err(e) => {
-                warn!("Failed to fetch polyline for route {route_id} pattern {suffix}: {e}");
-                continue;
-            }
-        };
+        let resp: TtcPolylineResponse =
+            match fetch_with_retry(agent, &url, rate_limiter).and_then(|mut r| {
+                r.body_mut()
+                    .read_json()
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+            }) {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("Failed to fetch polyline for route {route_id} pattern {suffix}: {e}");
+                    continue;
+                }
+            };
         for (resp_suffix, entry) in resp {
             let shape_id = format!("{}-{}", route_id, resp_suffix);
             match decode_shape(&shape_id, &entry.encoded_value) {
@@ -236,6 +240,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let generator = Arc::new(Mutex::new(GtfsGenerator::new()));
     let rate_limiter = Arc::new(RateLimiter::new());
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build()
+        .into();
 
     let agency_id = "TTC".to_string();
     {
@@ -253,12 +261,20 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     info!("Fetching stops...");
-    let ttc_stops_ka: Vec<TtcStop> =
-        fetch_with_retry(&format!("{}/v2/stops?locale=ka", BASE_URL), &rate_limiter)?
-            .into_json()?;
-    let ttc_stops_en: Vec<TtcStop> =
-        fetch_with_retry(&format!("{}/v2/stops?locale=en", BASE_URL), &rate_limiter)?
-            .into_json()?;
+    let ttc_stops_ka: Vec<TtcStop> = fetch_with_retry(
+        &agent,
+        &format!("{}/v2/stops?locale=ka", BASE_URL),
+        &rate_limiter,
+    )?
+    .body_mut()
+    .read_json()?;
+    let ttc_stops_en: Vec<TtcStop> = fetch_with_retry(
+        &agent,
+        &format!("{}/v2/stops?locale=en", BASE_URL),
+        &rate_limiter,
+    )?
+    .body_mut()
+    .read_json()?;
     let en_stop_names: HashMap<String, String> =
         ttc_stops_en.into_iter().map(|s| (s.id, s.name)).collect();
     let ka_stops_by_id: HashMap<String, &TtcStop> =
@@ -267,12 +283,20 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let used_stop_ids: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
     info!("Fetching routes...");
-    let ttc_routes_ka: Vec<TtcRoute> =
-        fetch_with_retry(&format!("{}/v3/routes?locale=ka", BASE_URL), &rate_limiter)?
-            .into_json()?;
-    let ttc_routes_en: Vec<TtcRoute> =
-        fetch_with_retry(&format!("{}/v3/routes?locale=en", BASE_URL), &rate_limiter)?
-            .into_json()?;
+    let ttc_routes_ka: Vec<TtcRoute> = fetch_with_retry(
+        &agent,
+        &format!("{}/v3/routes?locale=ka", BASE_URL),
+        &rate_limiter,
+    )?
+    .body_mut()
+    .read_json()?;
+    let ttc_routes_en: Vec<TtcRoute> = fetch_with_retry(
+        &agent,
+        &format!("{}/v3/routes?locale=en", BASE_URL),
+        &rate_limiter,
+    )?
+    .body_mut()
+    .read_json()?;
     let en_routes: Arc<HashMap<String, TtcRoute>> = Arc::new(
         ttc_routes_en
             .into_iter()
@@ -284,6 +308,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!("Fetching route {}", r.id);
         let rate_limiter = Arc::clone(&rate_limiter);
         let en_routes = Arc::clone(&en_routes);
+        let agent = agent.clone();
         let route_type = match r.mode.as_str() {
             "SUBWAY" => RouteType::Subway,
             "BUS" => RouteType::Bus,
@@ -337,8 +362,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         // Fetch Georgian route details (primary) to get patterns and headsigns
         let detail_url = format!("{}/v3/routes/{}?locale=ka", BASE_URL, r.id);
-        let detail: TtcRouteDetail = match fetch_with_retry(&detail_url, &rate_limiter)
-            .and_then(|r| r.into_json().map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>))
+        let detail: TtcRouteDetail = match fetch_with_retry(&agent, &detail_url, &rate_limiter)
+            .and_then(|mut r| r.body_mut().read_json().map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>))
         {
             Ok(d) => d,
             Err(e) => {
@@ -349,8 +374,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         // Fetch English route detail to get English headsigns for translation
         let en_detail_url = format!("{}/v3/routes/{}?locale=en", BASE_URL, r.id);
-        let en_detail: Option<TtcRouteDetail> = match fetch_with_retry(&en_detail_url, &rate_limiter)
-            .and_then(|r| r.into_json().map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>))
+        let en_detail: Option<TtcRouteDetail> = match fetch_with_retry(&agent, &en_detail_url, &rate_limiter)
+            .and_then(|mut r| r.body_mut().read_json().map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>))
         {
             Ok(d) => Some(d),
             Err(e) => {
@@ -394,7 +419,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         let pattern_suffixes: Vec<String> =
             detail.patterns.iter().map(|p| p.pattern_suffix.clone()).collect();
-        let route_shapes = fetch_shapes_for_route(&r.id, &pattern_suffixes, &rate_limiter);
+        let route_shapes = fetch_shapes_for_route(&agent, &r.id, &pattern_suffixes, &rate_limiter);
         {
             let _g = generator.lock().unwrap();
             for shape_vec in route_shapes.values() {
@@ -410,8 +435,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "{}/v2/routes/{}/schedule?locale=en&patternSuffix={}",
                 BASE_URL, r.id, pattern.pattern_suffix
             );
-            let schedule: TtcSchedule = match fetch_with_retry(&schedule_url, &rate_limiter)
-                .and_then(|r| r.into_json().map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>))
+            let schedule: TtcSchedule = match fetch_with_retry(&agent, &schedule_url, &rate_limiter)
+                .and_then(|mut r| r.body_mut().read_json().map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>))
             {
                 Ok(s) => s,
                 Err(e) => {
