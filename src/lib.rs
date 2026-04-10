@@ -42,7 +42,7 @@ pub fn fetch_with_retry(
     url: &str,
     rate_limiter: &RateLimiter,
 ) -> Result<ureq::Response, Box<dyn std::error::Error + Send + Sync>> {
-    const MAX_RETRIES: u32 = 8;
+    const MAX_RETRIES: u32 = 12;
     let mut last_err: Option<ureq::Error> = None;
     let mut backoff = Duration::from_secs(1);
     for attempt in 0..MAX_RETRIES {
