@@ -1,0 +1,11 @@
+update-tbilisi-feed:
+    image: docker.io/rust
+    before_script:
+        - wget "https://github.com/public-transport/gtfsclean/releases/latest/download/gtfsclean" -O /usr/local/bin/gtfsclean
+        - chmod +x /usr/local/bin/gtfsclean
+        - apt update
+        - apt install zip sqlite3 libzip5 bzip2 pkg-config protobuf-compiler -y
+    script:
+        - cargo run --release --bin gtfs-static -- -o gtfs.zip
+        # - gtfsclean --check-null-coords --remove-red-shapes --remove-red-services --remove-red-routes es.gtfs.zip -o es.gtfs.zip
+        - if [ ! -z "$WEBDAV_PASSWORD" ]; then curl -X PUT --data-binary @gtfs.zip -u gtfs:"$WEBDAV_PASSWORD" https://jbb.ghsq.de/gtfs/ge-tbilisi.gtfs.zip; fi
