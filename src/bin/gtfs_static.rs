@@ -349,19 +349,19 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 })
                 .ok();
             }
-            if let Some(en_route) = en_routes.get(&r.id) {
-                if let Some(ref en_long_name) = en_route.long_name {
-                    g.add_translation(RawTranslation {
-                        table_name: "routes".to_string(),
-                        field_name: "route_long_name".to_string(),
-                        language: "en".to_string(),
-                        translation: en_long_name.clone(),
-                        record_id: Some(r.id.clone()),
-                        record_sub_id: None,
-                        field_value: None,
-                    })
-                    .ok();
-                }
+            if let Some(en_route) = en_routes.get(&r.id)
+                && let Some(ref en_long_name) = en_route.long_name
+            {
+                g.add_translation(RawTranslation {
+                    table_name: "routes".to_string(),
+                    field_name: "route_long_name".to_string(),
+                    language: "en".to_string(),
+                    translation: en_long_name.clone(),
+                    record_id: Some(r.id.clone()),
+                    record_sub_id: None,
+                    field_value: None,
+                })
+                .ok();
             }
         }
 
@@ -426,7 +426,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             detail.patterns.iter().map(|p| p.pattern_suffix.clone()).collect();
         let route_shapes = fetch_shapes_for_route(&r.id, &pattern_suffixes, &rate_limiter);
         {
-            let mut g = generator.lock().unwrap();
+            let _g = generator.lock().unwrap();
             for shape_vec in route_shapes.values() {
                 for shape in shape_vec {
                     g.add_shape(shape.clone()).ok();
