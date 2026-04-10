@@ -1,0 +1,73 @@
+[Unit]
+Description=GTFS-RT vehicle positions feed for Tbilisi public transport
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gtfs-realtime --gtfs-path /var/lib/gtfs-realtime-tbilisi/gtfs.zip --listen-addr 0.0.0.0:9876
+
+# Credentials & identity
+DynamicUser=yes
+StateDirectory=gtfs-realtime-tbilisi
+WorkingDirectory=/var/lib/gtfs-realtime-tbilisi
+
+# Logging
+Environment=RUST_LOG=info
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gtfs-realtime-tbilisi
+
+# Restart policy
+Restart=on-failure
+RestartSec=5s
+WatchdogSec=300
+
+# Resource limits
+LimitNOFILE=4096
+MemoryMax=512M
+CPUQuota=50%
+
+# Filesystem sandboxing
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/
+ReadWritePaths=/var/lib/gtfs-realtime-tbilisi
+
+# Network sandboxing — only needs outbound HTTPS + inbound listen
+RestrictAddressFamilies=AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=any
+
+# Namespace & privilege isolation
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+PrivateDevices=yes
+PrivateUsers=yes
+MemoryDenyWriteExecute=yes
+
+# System call filtering
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @swap @reboot @obsolete
+
+# Misc hardening
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+ProcSubset=pid
+ProtectProc=invisible
+RemoveIPC=yes
+
+[Install]
+WantedBy=multi-user.target
