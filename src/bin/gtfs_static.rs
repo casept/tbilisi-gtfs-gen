@@ -10,7 +10,7 @@ use rayon::prelude::*;
 
 use rgb::RGB8;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tbilisi_gtfs_gen::*;
 
@@ -261,40 +261,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .into_json()?;
     let en_stop_names: HashMap<String, String> =
         ttc_stops_en.into_iter().map(|s| (s.id, s.name)).collect();
-    {
-        let mut g = generator.lock().unwrap();
-        for s in &ttc_stops_ka {
-            g.add_stop(Stop {
-                id: s.id.clone(),
-                code: s.code.clone(),
-                name: Some(s.name.clone()),
-                latitude: Some(s.lat),
-                longitude: Some(s.lon),
-                ..Default::default()
-            })?;
-            // Georgian is primary; add ka translation so consumers that look up by language find it.
-            g.add_translation(RawTranslation {
-                table_name: "stops".to_string(),
-                field_name: "stop_name".to_string(),
-                language: "ka".to_string(),
-                translation: s.name.clone(),
-                record_id: Some(s.id.clone()),
-                record_sub_id: None,
-                field_value: None,
-            })?;
-            if let Some(en_name) = en_stop_names.get(&s.id) {
-                g.add_translation(RawTranslation {
-                    table_name: "stops".to_string(),
-                    field_name: "stop_name".to_string(),
-                    language: "en".to_string(),
-                    translation: en_name.clone(),
-                    record_id: Some(s.id.clone()),
-                    record_sub_id: None,
-                    field_value: None,
-                })?;
-            }
-        }
-    }
+    let ka_stops_by_id: HashMap<String, &TtcStop> =
+        ttc_stops_ka.iter().map(|s| (s.id.clone(), s)).collect();
+    // Track which stops are actually referenced by stop_times; only those will be emitted.
+    let used_stop_ids: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
     info!("Fetching routes...");
     let ttc_routes_ka: Vec<TtcRoute> =
@@ -429,7 +399,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let _g = generator.lock().unwrap();
             for shape_vec in route_shapes.values() {
                 for shape in shape_vec {
-                    g.add_shape(shape.clone()).ok();
+                    // g.add_shape(shape.clone()).ok();
+                    trace!("Skipping shape {shape:?}")
                 }
             }
         }
@@ -529,6 +500,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         })
                         .ok();
 
+                        for st in &stop_times {
+                            used_stop_ids.lock().unwrap().insert(st.stop_id.clone());
+                        }
                         for st in stop_times {
                             g.add_stop_time(st).ok();
                         }
@@ -538,6 +512,56 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
         info!("Processed route {}", r.id);
     });
+
+    // Only emit stops that are actually referenced by at least one stop_time.
+    let used_stop_ids = Arc::try_unwrap(used_stop_ids)
+        .map_err(|_| "Arc unwrap failed")?
+        .into_inner()?;
+    info!(
+        "Adding {} used stops (skipping {} unused)",
+        used_stop_ids.len(),
+        ka_stops_by_id.len() - used_stop_ids.len()
+    );
+    {
+        let mut g = generator.lock().unwrap();
+        for stop_id in &used_stop_ids {
+            let Some(s) = ka_stops_by_id.get(stop_id) else {
+                warn!("Stop {stop_id} referenced in stop_times but not found in API response");
+                continue;
+            };
+            g.add_stop(Stop {
+                id: s.id.clone(),
+                code: s.code.clone(),
+                name: Some(s.name.clone()),
+                latitude: Some(s.lat),
+                longitude: Some(s.lon),
+                ..Default::default()
+            })
+            .ok();
+            g.add_translation(RawTranslation {
+                table_name: "stops".to_string(),
+                field_name: "stop_name".to_string(),
+                language: "ka".to_string(),
+                translation: s.name.clone(),
+                record_id: Some(s.id.clone()),
+                record_sub_id: None,
+                field_value: None,
+            })
+            .ok();
+            if let Some(en_name) = en_stop_names.get(stop_id) {
+                g.add_translation(RawTranslation {
+                    table_name: "stops".to_string(),
+                    field_name: "stop_name".to_string(),
+                    language: "en".to_string(),
+                    translation: en_name.clone(),
+                    record_id: Some(s.id.clone()),
+                    record_sub_id: None,
+                    field_value: None,
+                })
+                .ok();
+            }
+        }
+    }
 
     let g_final = Arc::try_unwrap(generator)
         .map_err(|_| "Arc unwrap failed")?
