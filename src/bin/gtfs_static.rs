@@ -468,9 +468,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                     let mut last_time = None;
                     let mut stop_times = Vec::new();
-                    let mut valid_trip = true;
 
                     for (stop_idx, stop) in ws.stops.iter().enumerate() {
+                        trace!("Processing stop_idx = {stop_idx}, stop = {stop:?}");
                         let times: Vec<&str> = stop.arrival_times.split(',').collect();
                         if let Some(time_str) = times.get(trip_idx) {
                             if time_str.is_empty() {
@@ -487,9 +487,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                         if prev - seconds > 12 * 3600 {
                                             seconds += 24 * 3600;
                                         } else {
-                                            warn!("Trip invalid (time jumps backwards). time_str = {time_str}, seconds = {seconds}, seconds_prev = {prev}");
-                                            valid_trip = false;
-                                            break;
+                                            warn!("Trip invalid (time jumps backwards). route = {r:?}, stop_idx = {stop_idx}, stop = {stop:?}, time_str = {time_str}, seconds = {seconds}, seconds_prev = {prev}");
                                         }
                                     }
 
@@ -508,7 +506,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         }
                     }
 
-                    if valid_trip && !stop_times.is_empty() {
+                    if !stop_times.is_empty() {
                         // Only reference a shape_id if the shape was actually fetched successfully
                         let shape_id = route_shapes
                             .contains_key(&pattern.pattern_suffix)
